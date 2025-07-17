@@ -1,0 +1,182 @@
+@import 'tailwindcss/base';
+@import 'tailwindcss/components';
+@import 'tailwindcss/utilities';
+
+/* Custom styles for CareLink */
+@layer base {
+  html {
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md transition-colors duration-200;
+  }
+
+  .btn-secondary {
+    @apply bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium py-2 px-4 rounded-md transition-colors duration-200;
+  }
+
+  .btn-danger {
+    @apply bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-md transition-colors duration-200;
+  }
+
+  .card {
+    @apply bg-white rounded-lg shadow-sm border border-gray-200 p-6;
+  }
+
+  .card-header {
+    @apply border-b border-gray-200 pb-4 mb-4;
+  }
+
+  .card-title {
+    @apply text-lg font-semibold text-gray-900;
+  }
+
+  .form-input {
+    @apply block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm;
+  }
+
+  .form-label {
+    @apply block text-sm font-medium text-gray-700 mb-1;
+  }
+
+  .status-badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .status-active {
+    @apply bg-green-100 text-green-800;
+  }
+
+  .status-pending {
+    @apply bg-yellow-100 text-yellow-800;
+  }
+
+  .status-completed {
+    @apply bg-blue-100 text-blue-800;
+  }
+
+  .status-cancelled {
+    @apply bg-red-100 text-red-800;
+  }
+
+  .vital-card {
+    @apply bg-white rounded-lg shadow-sm border border-gray-200 p-4 hover:shadow-md transition-shadow duration-200;
+  }
+
+  .vital-value {
+    @apply text-2xl font-bold text-gray-900;
+  }
+
+  .vital-label {
+    @apply text-sm text-gray-500 uppercase tracking-wide;
+  }
+
+  .vital-trend {
+    @apply text-sm font-medium;
+  }
+
+  .trend-up {
+    @apply text-green-600;
+  }
+
+  .trend-down {
+    @apply text-red-600;
+  }
+
+  .trend-stable {
+    @apply text-gray-600;
+  }
+
+  .chat-message {
+    @apply mb-4 p-3 rounded-lg max-w-xs;
+  }
+
+  .chat-message-sent {
+    @apply bg-blue-600 text-white ml-auto;
+  }
+
+  .chat-message-received {
+    @apply bg-gray-200 text-gray-900;
+  }
+
+  .sidebar {
+    @apply fixed inset-y-0 left-0 z-50 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out;
+  }
+
+  .sidebar-closed {
+    @apply -translate-x-full;
+  }
+
+  .sidebar-open {
+    @apply translate-x-0;
+  }
+
+  .overlay {
+    @apply fixed inset-0 bg-black bg-opacity-50 z-40;
+  }
+
+  .loading-spinner {
+    @apply animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600;
+  }
+
+  .pulse-dot {
+    @apply animate-pulse bg-green-400 rounded-full h-2 w-2;
+  }
+
+  /* Healthcare specific styles */
+  .health-alert {
+    @apply bg-red-50 border border-red-200 rounded-md p-4;
+  }
+
+  .health-warning {
+    @apply bg-yellow-50 border border-yellow-200 rounded-md p-4;
+  }
+
+  .health-info {
+    @apply bg-blue-50 border border-blue-200 rounded-md p-4;
+  }
+
+  .health-success {
+    @apply bg-green-50 border border-green-200 rounded-md p-4;
+  }
+
+  /* Chart container styles */
+  .chart-container {
+    @apply relative h-64 w-full;
+  }
+
+  /* Responsive grid */
+  .grid-auto-fit {
+    @apply grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4;
+  }
+
+  /* Custom animations */
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .fade-in {
+    animation: fadeIn 0.3s ease-out;
+  }
+
+  /* Print styles */
+  @media print {
+    .no-print {
+      display: none !important;
+    }
+    
+    .print-break {
+      page-break-before: always;
+    }
+  }
+} 
