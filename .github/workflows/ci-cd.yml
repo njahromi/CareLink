@@ -1,0 +1,252 @@
+name: CareLink CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  NODE_VERSION: '18'
+  AZURE_WEBAPP_NAME_BACKEND: carelink-backend-${{ github.sha }}
+  AZURE_WEBAPP_NAME_FRONTEND: carelink-frontend-${{ github.sha }}
+
+jobs:
+  # Backend Tests and Build
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: backend/package-lock.json
+
+    - name: Install dependencies
+      run: |
+        cd backend
+        npm ci
+
+    - name: Run linting
+      run: |
+        cd backend
+        npm run lint
+
+    - name: Run tests
+      run: |
+        cd backend
+        npm test
+      env:
+        CI: true
+
+    - name: Build application
+      run: |
+        cd backend
+        npm run build
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: backend-build
+        path: backend/
+
+  # Frontend Tests and Build
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install dependencies
+      run: |
+        cd frontend
+        npm ci
+
+    - name: Run linting
+      run: |
+        cd frontend
+        npm run lint
+
+    - name: Run tests
+      run: |
+        cd frontend
+        npm test
+      env:
+        CI: true
+
+    - name: Build application
+      run: |
+        cd frontend
+        npm run build
+      env:
+        VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: frontend-build
+        path: frontend/dist/
+
+  # Infrastructure Deployment
+  infrastructure:
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: '1.5.0'
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Terraform Init
+      run: |
+        cd infra
+        terraform init
+
+    - name: Terraform Plan
+      run: |
+        cd infra
+        terraform plan -out=tfplan
+      env:
+        TF_VAR_smart_client_id: ${{ secrets.SMART_CLIENT_ID }}
+        TF_VAR_smart_client_secret: ${{ secrets.SMART_CLIENT_SECRET }}
+
+    - name: Terraform Apply
+      run: |
+        cd infra
+        terraform apply -auto-approve tfplan
+      env:
+        TF_VAR_smart_client_id: ${{ secrets.SMART_CLIENT_ID }}
+        TF_VAR_smart_client_secret: ${{ secrets.SMART_CLIENT_SECRET }}
+
+  # Deploy Backend
+  deploy-backend:
+    needs: infrastructure
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Download backend artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: backend-build
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Deploy to Azure Web App - Backend
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: ${{ env.AZURE_WEBAPP_NAME_BACKEND }}
+        package: ./backend
+
+  # Deploy Frontend
+  deploy-frontend:
+    needs: infrastructure
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Download frontend artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: frontend-build
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Deploy to Azure Web App - Frontend
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: ${{ env.AZURE_WEBAPP_NAME_FRONTEND }}
+        package: ./frontend
+
+  # Security Scan
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  # Performance Tests
+  performance:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        cd backend
+        npm ci
+
+    - name: Run performance tests
+      run: |
+        cd backend
+        npm run test:perf
+      env:
+        CI: true
+
+  # Notify Deployment
+  notify:
+    needs: [deploy-backend, deploy-frontend]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+    - name: Notify deployment success
+      run: |
+        echo "Deployment completed successfully!"
+        echo "Backend URL: https://${{ env.AZURE_WEBAPP_NAME_BACKEND }}.azurewebsites.net"
+        echo "Frontend URL: https://${{ env.AZURE_WEBAPP_NAME_FRONTEND }}.azurewebsites.net" 
