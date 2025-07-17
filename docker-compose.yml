@@ -1,0 +1,141 @@
+version: '3.8'
+
+services:
+  # Backend API
+  backend:
+    build: ./backend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - MONGODB_URI=mongodb://mongo:27017/carelink
+      - AZURE_SQL_CONNECTION_STRING=Server=mssql,1433;Database=carelink;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=true
+      - FHIR_SERVER_URL=https://hapi.fhir.org/baseR4
+      - SMART_CLIENT_ID=carelink-client
+      - SMART_CLIENT_SECRET=carelink-secret
+      - JWT_SECRET=your-super-secret-jwt-key-for-development
+      - FRONTEND_URL=http://localhost:5173
+    depends_on:
+      - mongo
+      - mssql
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    networks:
+      - carelink-network
+
+  # Frontend Application
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:80"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:3000/api
+      - VITE_FHIR_SERVER_URL=https://hapi.fhir.org/baseR4
+      - VITE_SMART_CLIENT_ID=carelink-client
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks:
+      - carelink-network
+
+  # MongoDB for chat and unstructured data
+  mongo:
+    image: mongo:6.0
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=carelink
+    volumes:
+      - mongo_data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - carelink-network
+
+  # SQL Server for structured data
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    ports:
+      - "1433:1433"
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=YourStrong@Passw0rd
+      - MSSQL_PID=Developer
+    volumes:
+      - mssql_data:/var/opt/mssql
+      - ./scripts/sql-init.sql:/docker-entrypoint-initdb.d/sql-init.sql:ro
+    networks:
+      - carelink-network
+
+  # Redis for caching and sessions
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - carelink-network
+
+  # Nginx reverse proxy
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - carelink-network
+
+  # Application monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - carelink-network
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+    networks:
+      - carelink-network
+
+volumes:
+  mongo_data:
+  mssql_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  carelink-network:
+    driver: bridge 
