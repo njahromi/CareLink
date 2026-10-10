@@ -19,10 +19,14 @@ Authorization: Bearer <your-jwt-token>
 
 ### SMART on FHIR Authentication
 
-For healthcare provider authentication, the API supports SMART on FHIR OAuth2 flow:
+CareLink hosts a SMART authorization server (Smile Security-module analog):
 
-1. **Launch URL**: `GET /auth/smart/launch?iss=<fhir-server>&launch=<launch-token>`
-2. **Callback**: `GET /auth/smart/callback?code=<auth-code>&state=<state>`
+1. `GET /.well-known/smart-configuration`
+2. `GET /oauth/authorize` — login + consent, PKCE
+3. `POST /oauth/token` — authorization_code, client_credentials, refresh_token
+4. Password login (`POST /api/auth/login`) also issues a SMART access token for local demos.
+
+Demo users: `demo/demo123`, `jordan/jordan123`, `admin/admin123`, `provider/provider123`.
 
 ## Endpoints
 
@@ -403,11 +407,15 @@ For real-time features like chat, the API supports WebSocket connections:
 
 ## FHIR Integration
 
-The API integrates with HAPI FHIR server for healthcare data:
+The API fronts a **local HAPI FHIR R4** repository (`http://localhost:8080/fhir`) through a gateway that enforces OAuth scopes, patient context, and partitions.
 
-- **Base URL**: `https://hapi.fhir.org/baseR4`
-- **Resources**: Patient, Observation, CarePlan, Appointment, MedicationRequest, Condition
-- **Authentication**: SMART on FHIR OAuth2
+Additional endpoints:
+
+- `GET /api/fhir/patients/{id}/summary` — Patient Access aggregate
+- `GET /api/fhir/patients/{id}/coverage` and `/eob` — CARIN-lite claims
+- `POST /api/fhir/export` — Bulk Data `$export`
+- `GET /api/admin/*` — Platform Admin (modules, partitions, channels, security, audit)
+- `POST /api/admin/channels/ingest` — JSON Bundle channel
 
 ## Security
 

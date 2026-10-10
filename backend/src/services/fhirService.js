@@ -1,200 +1,283 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
+const { PARTITION_SYSTEM } = require('../config/platform');
+const localFhir = require('./localFhirStore');
 
 class FHIRService {
   constructor() {
-    this.baseUrl = process.env.FHIR_SERVER_URL || 'https://hapi.fhir.org/baseR4';
+    this.baseUrl = process.env.FHIR_SERVER_URL || 'http://localhost:8080/fhir';
+    this.mode = process.env.FHIR_MODE || 'auto';
+    this.embedded = this.mode === 'embedded';
     this.client = axios.create({
       baseURL: this.baseUrl,
+      timeout: 20000,
       headers: {
         'Content-Type': 'application/fhir+json',
-        'Accept': 'application/fhir+json'
+        Accept: 'application/fhir+json'
       }
     });
   }
 
-  // Get patient information
-  async getPatient(patientId) {
-    try {
-      const response = await this.client.get(`/Patient/${patientId}`);
-      logger.info(`Retrieved patient data for ID: ${patientId}`);
-      return response.data;
-    } catch (error) {
-      logger.error(`Error retrieving patient ${patientId}:`, error.message);
-      throw new Error(`Failed to retrieve patient: ${error.message}`);
-    }
+  get repositoryUrl() {
+    return this.embedded ? 'embedded://carelink-r4' : this.baseUrl;
   }
 
-  // Get patient observations (vital signs)
-  async getPatientObservations(patientId, category = null) {
-    try {
-      let url = `/Observation?subject=Patient/${patientId}`;
-      if (category) {
-        url += `&category=${category}`;
+  async ensureBackend() {
+    if (this.mode === 'embedded') {
+      this.embedded = true;
+      return;
+    }
+    if (this.mode === 'hapi') {
+      this.embedded = false;
+      return;
+    }
+    if (this._probePromise) {
+      return this._probePromise;
+    }
+    this._probePromise = (async () => {
+      try {
+        await this.client.get('/metadata');
+        this.embedded = false;
+        logger.info(`Using HAPI FHIR repository at ${this.baseUrl}`);
+      } catch (error) {
+        this.embedded = true;
+        logger.warn(`HAPI unavailable (${error.message}); using embedded FHIR store with seed data`);
       }
-      
-      const response = await this.client.get(url);
-      logger.info(`Retrieved observations for patient ${patientId}`);
-      return response.data;
-    } catch (error) {
-      logger.error(`Error retrieving observations for patient ${patientId}:`, error.message);
-      throw new Error(`Failed to retrieve observations: ${error.message}`);
-    }
+    })();
+    return this._probePromise;
   }
 
-  // Get patient care plans
-  async getPatientCarePlans(patientId) {
-    try {
-      const response = await this.client.get(`/CarePlan?subject=Patient/${patientId}`);
-      logger.info(`Retrieved care plans for patient ${patientId}`);
-      return response.data;
-    } catch (error) {
-      logger.error(`Error retrieving care plans for patient ${patientId}:`, error.message);
-      throw new Error(`Failed to retrieve care plans: ${error.message}`);
+  partitionParam(partition) {
+    if (!partition) {
+      return null;
     }
+    return `${PARTITION_SYSTEM}|${partition}`;
   }
 
-  // Get patient appointments
-  async getPatientAppointments(patientId) {
-    try {
-      const response = await this.client.get(`/Appointment?actor=Patient/${patientId}`);
-      logger.info(`Retrieved appointments for patient ${patientId}`);
-      return response.data;
-    } catch (error) {
-      logger.error(`Error retrieving appointments for patient ${patientId}:`, error.message);
-      throw new Error(`Failed to retrieve appointments: ${error.message}`);
+  hasPartition(resource, partition) {
+    if (!partition) {
+      return true;
     }
+    return (resource.meta?.tag || []).some(
+      (item) => item.system === PARTITION_SYSTEM && item.code === partition
+    );
   }
 
-  // Get patient medications
-  async getPatientMedications(patientId) {
-    try {
-      const response = await this.client.get(`/MedicationRequest?subject=Patient/${patientId}`);
-      logger.info(`Retrieved medications for patient ${patientId}`);
-      return response.data;
-    } catch (error) {
-      logger.error(`Error retrieving medications for patient ${patientId}:`, error.message);
-      throw new Error(`Failed to retrieve medications: ${error.message}`);
+  applyPartition(resource, partition) {
+    if (!partition || !resource) {
+      return resource;
     }
+    const next = { ...resource };
+    next.meta = { ...(resource.meta || {}) };
+    const tags = [...(next.meta.tag || [])].filter(
+      (item) => item.system !== PARTITION_SYSTEM
+    );
+    tags.push({
+      system: PARTITION_SYSTEM,
+      code: partition,
+      display: partition
+    });
+    next.meta.tag = tags;
+    return next;
   }
 
-  // Get patient conditions (diagnoses)
-  async getPatientConditions(patientId) {
-    try {
-      const response = await this.client.get(`/Condition?subject=Patient/${patientId}`);
-      logger.info(`Retrieved conditions for patient ${patientId}`);
-      return response.data;
-    } catch (error) {
-      logger.error(`Error retrieving conditions for patient ${patientId}:`, error.message);
-      throw new Error(`Failed to retrieve conditions: ${error.message}`);
+  async request(method, url, { params, data, headers } = {}) {
+    await this.ensureBackend();
+    if (this.embedded) {
+      const verb = method.toLowerCase();
+      if (verb === 'get') return localFhir.get(url, params);
+      if (verb === 'post') return localFhir.post(url, data);
+      if (verb === 'put') return localFhir.put(url, data);
     }
-  }
-
-  // Search for patients
-  async searchPatients(searchParams = {}) {
     try {
-      const params = new URLSearchParams();
-      Object.keys(searchParams).forEach(key => {
-        if (searchParams[key]) {
-          params.append(key, searchParams[key]);
-        }
+      const response = await this.client.request({
+        method,
+        url,
+        params,
+        data,
+        headers
       });
-
-      const response = await this.client.get(`/Patient?${params.toString()}`);
-      logger.info('Patient search completed');
       return response.data;
     } catch (error) {
-      logger.error('Error searching patients:', error.message);
-      throw new Error(`Failed to search patients: ${error.message}`);
+      const status = error.response?.status;
+      const body = error.response?.data;
+      const message = body?.issue?.[0]?.diagnostics || body?.error || error.message;
+      logger.error(`FHIR ${method} ${url} failed: ${message}`);
+      const wrapped = new Error(message);
+      wrapped.statusCode = status || 502;
+      wrapped.name = 'FHIRError';
+      throw wrapped;
     }
   }
 
-  // Create observation (vital sign)
-  async createObservation(observationData) {
-    try {
-      const response = await this.client.post('/Observation', observationData);
-      logger.info('Created new observation');
-      return response.data;
-    } catch (error) {
-      logger.error('Error creating observation:', error.message);
-      throw new Error(`Failed to create observation: ${error.message}`);
-    }
+  async getPatient(patientId) {
+    return this.request('GET', `/Patient/${patientId}`);
   }
 
-  // Update care plan
-  async updateCarePlan(carePlanId, carePlanData) {
-    try {
-      const response = await this.client.put(`/CarePlan/${carePlanId}`, carePlanData);
-      logger.info(`Updated care plan ${carePlanId}`);
-      return response.data;
-    } catch (error) {
-      logger.error(`Error updating care plan ${carePlanId}:`, error.message);
-      throw new Error(`Failed to update care plan: ${error.message}`);
+  async search(resourceType, searchParams = {}, partition = null) {
+    const params = { ...searchParams };
+    const tag = this.partitionParam(partition);
+    if (tag) {
+      params._tag = tag;
     }
+    return this.request('GET', `/${resourceType}`, { params });
   }
 
-  // Get FHIR server capabilities
+  async searchByPatient(resourceType, patientId, extra = {}, partition = null) {
+    const subjectTypes = ['Observation', 'Condition', 'MedicationRequest', 'CarePlan', 'AllergyIntolerance', 'Coverage', 'ExplanationOfBenefit'];
+    const actorTypes = ['Appointment'];
+    const params = { ...extra };
+    if (resourceType === 'Patient') {
+      params._id = patientId;
+    } else if (actorTypes.includes(resourceType)) {
+      params.actor = `Patient/${patientId}`;
+    } else if (subjectTypes.includes(resourceType) || extra.subject) {
+      params.patient = params.patient || `Patient/${patientId}`;
+      if (!['Coverage', 'ExplanationOfBenefit', 'AllergyIntolerance'].includes(resourceType)) {
+        params.subject = params.subject || `Patient/${patientId}`;
+      }
+    }
+    return this.search(resourceType, params, partition);
+  }
+
+  async getPatientObservations(patientId, category = null, partition = null) {
+    const extra = {};
+    if (category) {
+      extra.category = category;
+    }
+    return this.searchByPatient('Observation', patientId, extra, partition);
+  }
+
+  async getPatientCarePlans(patientId, partition = null) {
+    return this.searchByPatient('CarePlan', patientId, {}, partition);
+  }
+
+  async getPatientAppointments(patientId, partition = null) {
+    return this.searchByPatient('Appointment', patientId, {}, partition);
+  }
+
+  async getPatientMedications(patientId, partition = null) {
+    return this.searchByPatient('MedicationRequest', patientId, {}, partition);
+  }
+
+  async getPatientConditions(patientId, partition = null) {
+    return this.searchByPatient('Condition', patientId, {}, partition);
+  }
+
+  async getPatientCoverage(patientId, partition = null) {
+    return this.search('Coverage', { beneficiary: `Patient/${patientId}` }, partition);
+  }
+
+  async getPatientEobs(patientId, partition = null) {
+    return this.search('ExplanationOfBenefit', { patient: `Patient/${patientId}` }, partition);
+  }
+
+  async getPatientAllergies(patientId, partition = null) {
+    return this.search('AllergyIntolerance', { patient: `Patient/${patientId}` }, partition);
+  }
+
+  async searchPatients(searchParams = {}, partition = null) {
+    return this.search('Patient', searchParams, partition);
+  }
+
+  async createResource(resourceType, resource, partition = null) {
+    return this.request('POST', `/${resourceType}`, {
+      data: this.applyPartition(resource, partition)
+    });
+  }
+
+  async updateResource(resourceType, id, resource, partition = null) {
+    return this.request('PUT', `/${resourceType}/${id}`, {
+      data: this.applyPartition({ ...resource, id, resourceType }, partition)
+    });
+  }
+
+  async createObservation(observationData, partition = null) {
+    return this.createResource('Observation', {
+      resourceType: 'Observation',
+      status: 'final',
+      ...observationData
+    }, partition);
+  }
+
+  async updateCarePlan(carePlanId, carePlanData, partition = null) {
+    return this.updateResource('CarePlan', carePlanId, carePlanData, partition);
+  }
+
+  async postTransaction(bundle, partition = null) {
+    const next = { ...bundle, resourceType: 'Bundle', type: bundle.type || 'transaction' };
+    if (partition && Array.isArray(next.entry)) {
+      next.entry = next.entry.map((entry) => ({
+        ...entry,
+        resource: this.applyPartition(entry.resource, partition)
+      }));
+    }
+    return this.request('POST', '/', { data: next });
+  }
+
   async getCapabilities() {
-    try {
-      const response = await this.client.get('/metadata');
-      logger.info('Retrieved FHIR server capabilities');
-      return response.data;
-    } catch (error) {
-      logger.error('Error retrieving FHIR capabilities:', error.message);
-      throw new Error(`Failed to retrieve capabilities: ${error.message}`);
-    }
+    return this.request('GET', '/metadata');
   }
 
-  // Validate FHIR resource
   async validateResource(resourceType, resourceData) {
-    try {
-      const response = await this.client.post(`/${resourceType}/$validate`, resourceData);
-      logger.info(`Validated ${resourceType} resource`);
-      return response.data;
-    } catch (error) {
-      logger.error(`Error validating ${resourceType} resource:`, error.message);
-      throw new Error(`Failed to validate resource: ${error.message}`);
+    return this.request('POST', `/${resourceType}/$validate`, { data: resourceData });
+  }
+
+  async countByType() {
+    await this.ensureBackend();
+    if (this.embedded) {
+      return localFhir.countByType();
     }
+    const types = ['Patient', 'Observation', 'Condition', 'MedicationRequest', 'CarePlan', 'Appointment', 'Coverage', 'ExplanationOfBenefit', 'AuditEvent', 'Organization', 'Practitioner'];
+    const counts = {};
+    await Promise.all(types.map(async (type) => {
+      try {
+        const bundle = await this.search(type, { _summary: 'count' });
+        counts[type] = bundle.total || 0;
+      } catch (error) {
+        counts[type] = null;
+      }
+    }));
+    return counts;
   }
 
-  // Helper method to format vital signs data
+  bundleEntries(bundle) {
+    return (bundle?.entry || []).map((entry) => entry.resource).filter(Boolean);
+  }
+
   formatVitalSigns(observations) {
-    if (!observations.entry) return [];
-
-    return observations.entry.map(entry => {
-      const obs = entry.resource;
-      return {
-        id: obs.id,
-        code: obs.code?.coding?.[0]?.code,
-        display: obs.code?.coding?.[0]?.display,
-        value: obs.valueQuantity?.value,
-        unit: obs.valueQuantity?.unit,
-        date: obs.effectiveDateTime,
-        status: obs.status
-      };
-    });
+    return this.bundleEntries(observations).map((obs) => ({
+      id: obs.id,
+      code: obs.code?.coding?.[0]?.code,
+      display: obs.code?.coding?.[0]?.display || obs.code?.text,
+      value: obs.valueQuantity?.value,
+      unit: obs.valueQuantity?.unit,
+      date: obs.effectiveDateTime,
+      status: obs.status
+    }));
   }
 
-  // Helper method to format care plan data
   formatCarePlans(carePlans) {
-    if (!carePlans.entry) return [];
+    return this.bundleEntries(carePlans).map((plan) => ({
+      id: plan.id,
+      title: plan.title,
+      description: plan.description,
+      status: plan.status,
+      period: plan.period,
+      goals: plan.goal?.map((item) => item.display || item.reference) || [],
+      activities: (plan.activity || []).map((item) => item.detail?.description || item.detail?.status)
+    }));
+  }
 
-    return carePlans.entry.map(entry => {
-      const plan = entry.resource;
-      return {
-        id: plan.id,
-        title: plan.title,
-        description: plan.description,
-        status: plan.status,
-        period: plan.period,
-        goals: plan.goal?.map(g => g.reference),
-        activities: plan.activity?.map(a => ({
-          detail: a.detail,
-          outcomeCodeableConcept: a.outcomeCodeableConcept
-        }))
-      };
-    });
+  formatAppointments(appointments) {
+    return this.bundleEntries(appointments).map((item) => ({
+      id: item.id,
+      provider: item.participant?.find((part) => part.actor?.reference?.startsWith('Practitioner'))?.actor?.display || 'Provider',
+      type: item.description || item.serviceType?.[0]?.text || 'Appointment',
+      date: item.start,
+      status: item.status
+    }));
   }
 }
 
-module.exports = new FHIRService(); 
+module.exports = new FHIRService();

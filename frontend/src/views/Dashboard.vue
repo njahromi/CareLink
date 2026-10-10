@@ -1,336 +1,178 @@
 <template>
   <div class="space-y-6">
-    <!-- Welcome Header -->
-    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-      <div class="flex items-center justify-between">
+    <div class="bg-white rounded-lg border border-gray-200 p-6">
+      <div class="flex justify-between items-start">
         <div>
-          <h1 class="text-2xl font-bold text-gray-900">
-            Welcome back, {{ user?.name || 'Patient' }}!
-          </h1>
-          <p class="text-gray-600 mt-1">
-            Here's your health overview for today
-          </p>
+          <p class="text-xs uppercase tracking-wide text-blue-600 font-semibold">CMS Patient Access</p>
+          <h1 class="text-2xl font-bold text-gray-900 mt-1">{{ patientName }}</h1>
+          <p class="text-gray-600 mt-1">US Core clinicals and CARIN-lite claims from the local FHIR R4 repository.</p>
         </div>
-        <div class="flex items-center space-x-4">
-          <div class="text-right">
-            <p class="text-sm text-gray-500">Last updated</p>
-            <p class="text-sm font-medium text-gray-900">{{ lastUpdated }}</p>
-          </div>
-          <div class="pulse-dot"></div>
+        <div class="text-right text-sm text-gray-500">
+          <p>Member {{ user?.fhirPatientId || '—' }}</p>
+          <p>Partition {{ user?.partition || 'patient-access' }}</p>
+        </div>
+      </div>
+      <p v-if="loadError" class="mt-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded p-3">{{ loadError }}</p>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div class="card">
+        <p class="text-sm text-gray-500">Heart rate</p>
+        <p class="text-2xl font-bold">{{ vital('8867-4') }}</p>
+      </div>
+      <div class="card">
+        <p class="text-sm text-gray-500">Blood pressure</p>
+        <p class="text-2xl font-bold">{{ bloodPressure }}</p>
+      </div>
+      <div class="card">
+        <p class="text-sm text-gray-500">Temperature</p>
+        <p class="text-2xl font-bold">{{ vital('8310-5') }}</p>
+      </div>
+      <div class="card">
+        <p class="text-sm text-gray-500">Next appointment</p>
+        <p class="text-lg font-bold">{{ nextAppointment }}</p>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div class="card">
+        <h3 class="card-title mb-3">Vital signs</h3>
+        <table class="w-full text-sm">
+          <thead><tr class="text-left text-gray-500"><th class="pb-2">Observation</th><th>Value</th><th>Date</th></tr></thead>
+          <tbody>
+            <tr v-for="item in summary.vitals" :key="item.id" class="border-t">
+              <td class="py-2">{{ item.display }}</td>
+              <td>{{ item.value }} {{ item.unit }}</td>
+              <td>{{ formatDate(item.date) }}</td>
+            </tr>
+            <tr v-if="!summary.vitals?.length"><td colspan="3" class="py-4 text-gray-500">No observations in the repository yet. Seed FHIR data first.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3 class="card-title mb-3">Conditions and medications</h3>
+        <ul class="space-y-2 text-sm">
+          <li v-for="item in summary.conditions" :key="item.id">
+            <span class="font-medium">{{ displayCode(item.code) }}</span>
+            <span class="text-gray-500"> · {{ item.clinicalStatus?.coding?.[0]?.code }}</span>
+          </li>
+          <li v-for="item in summary.medications" :key="item.id" class="text-gray-700">
+            {{ item.medicationCodeableConcept?.text || displayCode(item.medicationCodeableConcept) }}
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div class="card">
+        <h3 class="card-title mb-3">Coverage (CARIN)</h3>
+        <div v-for="item in summary.coverage" :key="item.id" class="text-sm">
+          <p class="font-medium">{{ item.class?.[0]?.name || item.subscriberId }}</p>
+          <p class="text-gray-500">Subscriber {{ item.subscriberId }} · {{ item.status }}</p>
+        </div>
+        <p v-if="!summary.coverage?.length" class="text-gray-500 text-sm">No coverage on file.</p>
+      </div>
+      <div class="card">
+        <h3 class="card-title mb-3">Claims / EOB</h3>
+        <div v-for="item in summary.eob" :key="item.id" class="text-sm border-b last:border-0 py-2">
+          <p class="font-medium">{{ item.type?.coding?.[0]?.code }} claim</p>
+          <p class="text-gray-500">{{ item.created }} · benefit {{ item.total?.[0]?.amount?.value }} {{ item.total?.[0]?.amount?.currency }}</p>
         </div>
       </div>
     </div>
 
-    <!-- Quick Stats -->
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-      <div class="card">
-        <div class="flex items-center">
-          <div class="flex-shrink-0">
-            <HeartIcon class="h-8 w-8 text-red-500" />
-          </div>
-          <div class="ml-4">
-            <p class="text-sm font-medium text-gray-500">Heart Rate</p>
-            <p class="text-2xl font-bold text-gray-900">{{ latestVitals.heartRate || '--' }} bpm</p>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="flex items-center">
-          <div class="flex-shrink-0">
-            <ScaleIcon class="h-8 w-8 text-blue-500" />
-          </div>
-          <div class="ml-4">
-            <p class="text-sm font-medium text-gray-500">Blood Pressure</p>
-            <p class="text-2xl font-bold text-gray-900">{{ latestVitals.bloodPressure || '--' }}</p>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="flex items-center">
-          <div class="flex-shrink-0">
-            <ThermometerIcon class="h-8 w-8 text-orange-500" />
-          </div>
-          <div class="ml-4">
-            <p class="text-sm font-medium text-gray-500">Temperature</p>
-            <p class="text-2xl font-bold text-gray-900">{{ latestVitals.temperature || '--' }}°F</p>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="flex items-center">
-          <div class="flex-shrink-0">
-            <CalendarIcon class="h-8 w-8 text-green-500" />
-          </div>
-          <div class="ml-4">
-            <p class="text-sm font-medium text-gray-500">Next Appointment</p>
-            <p class="text-2xl font-bold text-gray-900">{{ nextAppointment || 'None' }}</p>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Main Content Grid -->
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      <!-- Recent Vitals Chart -->
-      <div class="lg:col-span-2 card">
-        <div class="card-header">
-          <h3 class="card-title">Recent Vital Signs</h3>
-        </div>
-        <div class="chart-container">
-          <LineChart
-            v-if="vitalsChartData"
-            :data="vitalsChartData"
-            :options="chartOptions"
-          />
-          <div v-else class="flex items-center justify-center h-64">
-            <div class="text-center">
-              <ChartBarIcon class="h-12 w-12 text-gray-400 mx-auto mb-4" />
-              <p class="text-gray-500">No vital signs data available</p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Upcoming Appointments -->
-      <div class="card">
-        <div class="card-header">
-          <h3 class="card-title">Upcoming Appointments</h3>
-        </div>
-        <div class="space-y-4">
-          <div v-if="upcomingAppointments.length === 0" class="text-center py-8">
-            <CalendarIcon class="h-12 w-12 text-gray-400 mx-auto mb-4" />
-            <p class="text-gray-500">No upcoming appointments</p>
-          </div>
-          <div
-            v-for="appointment in upcomingAppointments"
-            :key="appointment.id"
-            class="border border-gray-200 rounded-lg p-4"
-          >
-            <div class="flex justify-between items-start">
-              <div>
-                <p class="font-medium text-gray-900">{{ appointment.provider }}</p>
-                <p class="text-sm text-gray-500">{{ appointment.type }}</p>
-                <p class="text-sm text-gray-500">{{ formatDate(appointment.date) }}</p>
-              </div>
-              <span class="status-badge status-active">Scheduled</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Care Plan Summary -->
     <div class="card">
-      <div class="card-header">
-        <h3 class="card-title">Active Care Plans</h3>
-      </div>
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <div
-          v-for="carePlan in activeCarePlans"
-          :key="carePlan.id"
-          class="border border-gray-200 rounded-lg p-4"
-        >
-          <div class="flex items-center justify-between mb-3">
-            <h4 class="font-medium text-gray-900">{{ carePlan.title }}</h4>
-            <span class="status-badge status-active">Active</span>
-          </div>
-          <p class="text-sm text-gray-600 mb-3">{{ carePlan.description }}</p>
-          <div class="space-y-2">
-            <div v-for="goal in carePlan.goals.slice(0, 2)" :key="goal" class="text-sm">
-              <span class="text-gray-500">•</span>
-              <span class="text-gray-700">{{ goal }}</span>
-            </div>
-          </div>
+      <h3 class="card-title mb-3">Care plans</h3>
+      <div class="grid md:grid-cols-2 gap-4">
+        <div v-for="plan in summary.carePlans" :key="plan.id" class="border rounded-lg p-4">
+          <p class="font-medium">{{ plan.title }}</p>
+          <p class="text-sm text-gray-600 mt-1">{{ plan.description }}</p>
         </div>
-      </div>
-    </div>
-
-    <!-- Quick Actions -->
-    <div class="card">
-      <div class="card-header">
-        <h3 class="card-title">Quick Actions</h3>
-      </div>
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <button
-          @click="$router.push('/vitals')"
-          class="flex flex-col items-center p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
-        >
-          <HeartIcon class="h-8 w-8 text-red-500 mb-2" />
-          <span class="text-sm font-medium text-gray-900">View Vitals</span>
-        </button>
-        <button
-          @click="$router.push('/appointments')"
-          class="flex flex-col items-center p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
-        >
-          <CalendarIcon class="h-8 w-8 text-blue-500 mb-2" />
-          <span class="text-sm font-medium text-gray-900">Schedule</span>
-        </button>
-        <button
-          @click="$router.push('/chat')"
-          class="flex flex-col items-center p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
-        >
-          <ChatBubbleLeftIcon class="h-8 w-8 text-green-500 mb-2" />
-          <span class="text-sm font-medium text-gray-900">Message</span>
-        </button>
-        <button
-          @click="$router.push('/care-plans')"
-          class="flex flex-col items-center p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
-        >
-          <ClipboardDocumentListIcon class="h-8 w-8 text-purple-500 mb-2" />
-          <span class="text-sm font-medium text-gray-900">Care Plans</span>
-        </button>
       </div>
     </div>
   </div>
 </template>
 
 <script>
-import { ref, computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useStore } from 'vuex'
-import {
-  HeartIcon,
-  ScaleIcon,
-  ThermometerIcon,
-  CalendarIcon,
-  ChartBarIcon,
-  ChatBubbleLeftIcon,
-  ClipboardDocumentListIcon
-} from '@heroicons/vue/24/outline'
-import { LineChart } from 'vue-chartjs'
-import { format } from 'date-fns'
+import { fhirAPI } from '@/services/api'
 
 export default {
   name: 'Dashboard',
-  components: {
-    HeartIcon,
-    ScaleIcon,
-    ThermometerIcon,
-    CalendarIcon,
-    ChartBarIcon,
-    ChatBubbleLeftIcon,
-    ClipboardDocumentListIcon,
-    LineChart
-  },
   setup() {
     const store = useStore()
-
-    const loading = ref(false)
-    const latestVitals = ref({})
-    const upcomingAppointments = ref([])
-    const activeCarePlans = ref([])
-
     const user = computed(() => store.getters['auth/user'])
-    const lastUpdated = computed(() => format(new Date(), 'MMM dd, yyyy HH:mm'))
+    const summary = ref({
+      vitals: [],
+      conditions: [],
+      medications: [],
+      carePlans: [],
+      appointments: [],
+      coverage: [],
+      eob: []
+    })
+    const loadError = ref('')
 
-    const vitalsChartData = ref({
-      labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-      datasets: [
-        {
-          label: 'Heart Rate (bpm)',
-          data: [72, 68, 75, 70, 73, 69, 71],
-          borderColor: '#ef4444',
-          backgroundColor: 'rgba(239, 68, 68, 0.1)',
-          tension: 0.4
-        },
-        {
-          label: 'Systolic BP',
-          data: [120, 118, 125, 122, 119, 121, 123],
-          borderColor: '#3b82f6',
-          backgroundColor: 'rgba(59, 130, 246, 0.1)',
-          tension: 0.4
-        }
-      ]
+    const patientName = computed(() => {
+      const name = summary.value.patient?.name?.[0]
+      if (name) {
+        return `${(name.given || []).join(' ')} ${name.family || ''}`.trim()
+      }
+      return user.value?.name || 'Member'
     })
 
-    const chartOptions = {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          position: 'top'
-        }
-      },
-      scales: {
-        y: {
-          beginAtZero: false
-        }
-      }
+    const vital = (code) => {
+      const found = summary.value.vitals?.find((item) => item.code === code)
+      return found ? `${found.value} ${found.unit || ''}` : '—'
     }
 
-    const formatDate = (dateString) => {
-      return format(new Date(dateString), 'MMM dd, yyyy HH:mm')
-    }
+    const bloodPressure = computed(() => {
+      const sys = summary.value.vitals?.find((item) => item.code === '8480-6')
+      const dia = summary.value.vitals?.find((item) => item.code === '8462-4')
+      if (sys && dia) return `${sys.value}/${dia.value}`
+      return sys ? String(sys.value) : '—'
+    })
 
     const nextAppointment = computed(() => {
-      if (upcomingAppointments.value.length > 0) {
-        return formatDate(upcomingAppointments.value[0].date)
-      }
-      return 'None'
+      const next = summary.value.appointments?.[0]
+      return next?.date ? formatDate(next.date) : 'None'
     })
 
-    const loadDashboardData = async () => {
-      loading.value = true
+    const formatDate = (value) => {
+      if (!value) return '—'
+      return new Date(value).toLocaleString()
+    }
+
+    const displayCode = (codeable) => codeable?.text || codeable?.coding?.[0]?.display || '—'
+
+    const load = async () => {
+      const patientId = user.value?.fhirPatientId
+      if (!patientId) {
+        loadError.value = 'No patient context on this session. Sign in as demo or jordan, or complete a SMART launch.'
+        return
+      }
       try {
-        // Load mock data for demo
-        latestVitals.value = {
-          heartRate: 72,
-          bloodPressure: '120/80',
-          temperature: 98.6
-        }
-
-        upcomingAppointments.value = [
-          {
-            id: '1',
-            provider: 'Dr. Sarah Johnson',
-            type: 'Follow-up',
-            date: '2024-01-20T14:00:00Z'
-          },
-          {
-            id: '2',
-            provider: 'Dr. Michael Chen',
-            type: 'Cardiology Consultation',
-            date: '2024-01-25T10:00:00Z'
-          }
-        ]
-
-        activeCarePlans.value = [
-          {
-            id: '1',
-            title: 'Diabetes Management',
-            description: 'Comprehensive plan for managing Type 2 Diabetes',
-            goals: [
-              'Maintain blood glucose levels between 80-130 mg/dL',
-              'Achieve HbA1c < 7%',
-              'Lose 10 pounds in 6 months'
-            ]
-          }
-        ]
+        const { data } = await fhirAPI.getSummary(patientId)
+        summary.value = data.data
       } catch (error) {
-        console.error('Error loading dashboard data:', error)
-      } finally {
-        loading.value = false
+        loadError.value = error.response?.data?.error || 'Unable to load Patient Access data. Is the FHIR repository seeded?'
       }
     }
 
-    onMounted(() => {
-      loadDashboardData()
-    })
+    onMounted(load)
 
     return {
-      loading,
       user,
-      lastUpdated,
-      latestVitals,
-      upcomingAppointments,
-      activeCarePlans,
-      vitalsChartData,
-      chartOptions,
+      summary,
+      loadError,
+      patientName,
+      vital,
+      bloodPressure,
       nextAppointment,
-      formatDate
+      formatDate,
+      displayCode
     }
   }
 }
-</script> 
+</script>

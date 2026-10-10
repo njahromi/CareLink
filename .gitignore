@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+*.log
+logs/
+data/exports/
+data/platform-state.json
+.DS_Store
+coverage/
+*.tgz
+.vscode/
+.idea/

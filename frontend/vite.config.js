@@ -18,6 +18,16 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
       },
+      '/oauth': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+        secure: false,
+      },
+      '/.well-known': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+        secure: false,
+      },
     },
   },
   build: {
@@ -27,7 +37,6 @@ export default defineConfig({
       output: {
         manualChunks: {
           vendor: ['vue', 'vue-router', 'vuex'],
-          charts: ['chart.js', 'vue-chartjs', 'apexcharts'],
         },
       },
     },

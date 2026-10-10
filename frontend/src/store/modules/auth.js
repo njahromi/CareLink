@@ -1,119 +1,127 @@
 import api from '@/services/api'
 
 const state = {
-  user: null,
+  user: JSON.parse(localStorage.getItem('user') || 'null'),
   token: localStorage.getItem('token') || null,
+  refreshToken: localStorage.getItem('refreshToken') || null,
   isAuthenticated: !!localStorage.getItem('token')
 }
 
+const persist = (user, token, refreshToken) => {
+  if (user) localStorage.setItem('user', JSON.stringify(user))
+  else localStorage.removeItem('user')
+  if (token) localStorage.setItem('token', token)
+  else localStorage.removeItem('token')
+  if (refreshToken) localStorage.setItem('refreshToken', refreshToken)
+  else localStorage.removeItem('refreshToken')
+}
+
 const mutations = {
-  SET_USER(state, user) {
+  SET_SESSION(state, { user, token, refreshToken }) {
     state.user = user
-  },
-  SET_TOKEN(state, token) {
     state.token = token
-    if (token) {
-      localStorage.setItem('token', token)
-    } else {
-      localStorage.removeItem('token')
-    }
+    state.refreshToken = refreshToken || state.refreshToken
+    state.isAuthenticated = !!token
+    persist(user, token, refreshToken || state.refreshToken)
   },
-  SET_AUTHENTICATED(state, isAuthenticated) {
-    state.isAuthenticated = isAuthenticated
+  CLEAR_SESSION(state) {
+    state.user = null
+    state.token = null
+    state.refreshToken = null
+    state.isAuthenticated = false
+    persist(null, null, null)
   }
 }
 
 const actions = {
   async login({ commit }, credentials) {
-    try {
-      const response = await api.post('/auth/login', credentials)
-      const { user, token } = response.data.data
-      
-      commit('SET_USER', user)
-      commit('SET_TOKEN', token)
-      commit('SET_AUTHENTICATED', true)
-      
-      return { success: true }
-    } catch (error) {
-      throw new Error(error.response?.data?.error || 'Login failed')
-    }
+    const response = await api.post('/auth/login', credentials)
+    const { user, token, accessToken, refreshToken } = response.data.data
+    commit('SET_SESSION', {
+      user,
+      token: accessToken || token,
+      refreshToken
+    })
+    return { success: true, user }
   },
 
-  async register({ commit }, userData) {
-    try {
-      const response = await api.post('/auth/register', userData)
-      const { user, token } = response.data.data
-      
-      commit('SET_USER', user)
-      commit('SET_TOKEN', token)
-      commit('SET_AUTHENTICATED', true)
-      
-      return { success: true }
-    } catch (error) {
-      throw new Error(error.response?.data?.error || 'Registration failed')
+  async completeSmart({ commit }, { code, codeVerifier, redirectUri }) {
+    const body = new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: redirectUri,
+      client_id: import.meta.env.VITE_SMART_CLIENT_ID || 'carelink-patient-access',
+      code_verifier: codeVerifier
+    })
+    const tokenUrl = import.meta.env.VITE_OAUTH_TOKEN_URL || 'http://localhost:3000/oauth/token'
+    const response = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body
+    })
+    const tokens = await response.json()
+    if (!response.ok) {
+      throw new Error(tokens.error_description || tokens.error || 'SMART token exchange failed')
     }
+    const user = {
+      id: tokens.patient || 'smart-user',
+      name: tokens.patient ? `Member ${tokens.patient}` : 'SMART user',
+      role: tokens.patient ? 'patient' : 'user',
+      fhirPatientId: tokens.patient,
+      scopes: (tokens.scope || '').split(' ')
+    }
+    commit('SET_SESSION', {
+      user,
+      token: tokens.access_token,
+      refreshToken: tokens.refresh_token
+    })
+    return { success: true, user }
   },
 
-  async smartAuth({ commit }, { iss, launch }) {
-    try {
-      const response = await api.get('/auth/smart/launch', {
-        params: { iss, launch }
-      })
-      
-      // Redirect to SMART launch URL
-      window.location.href = response.data.data.launchUrl
-    } catch (error) {
-      throw new Error(error.response?.data?.error || 'SMART authentication failed')
-    }
-  },
-
-  async checkAuth({ commit }) {
+  async checkAuth({ commit, state }) {
     try {
       const response = await api.get('/auth/me')
-      const { user } = response.data.data
-      
-      commit('SET_USER', user)
-      commit('SET_AUTHENTICATED', true)
-      
+      commit('SET_SESSION', {
+        user: response.data.data.user,
+        token: state.token,
+        refreshToken: state.refreshToken
+      })
       return { success: true }
     } catch (error) {
-      commit('SET_USER', null)
-      commit('SET_TOKEN', null)
-      commit('SET_AUTHENTICATED', false)
+      commit('CLEAR_SESSION')
       throw error
     }
   },
 
   async logout({ commit }) {
-    commit('SET_USER', null)
-    commit('SET_TOKEN', null)
-    commit('SET_AUTHENTICATED', false)
+    commit('CLEAR_SESSION')
   },
 
   async refreshToken({ commit }) {
-    try {
-      const refreshToken = localStorage.getItem('refreshToken')
-      const response = await api.post('/auth/refresh', { refreshToken })
-      const { token } = response.data.data
-      
-      commit('SET_TOKEN', token)
-      return { success: true }
-    } catch (error) {
-      commit('SET_USER', null)
-      commit('SET_TOKEN', null)
-      commit('SET_AUTHENTICATED', false)
-      throw error
+    const refreshToken = localStorage.getItem('refreshToken')
+    if (!refreshToken) {
+      throw new Error('No refresh token')
     }
+    const response = await api.post('/auth/refresh', { refreshToken })
+    const { token, accessToken, refreshToken: nextRefresh } = response.data.data
+    const user = JSON.parse(localStorage.getItem('user') || 'null')
+    commit('SET_SESSION', {
+      user,
+      token: accessToken || token,
+      refreshToken: nextRefresh
+    })
+    return { success: true }
   }
 }
 
 const getters = {
-  isAuthenticated: state => state.isAuthenticated,
-  user: state => state.user,
-  token: state => state.token,
-  userRole: state => state.user?.role || 'patient',
-  isProvider: state => state.user?.role === 'provider',
-  isAdmin: state => state.user?.role === 'admin'
+  isAuthenticated: (state) => state.isAuthenticated,
+  user: (state) => state.user,
+  token: (state) => state.token,
+  userRole: (state) => state.user?.role || 'patient',
+  isProvider: (state) => state.user?.role === 'provider',
+  isAdmin: (state) => state.user?.role === 'admin',
+  fhirPatientId: (state) => state.user?.fhirPatientId
 }
 
 export default {
@@ -122,4 +130,4 @@ export default {
   mutations,
   actions,
   getters
-} 
+}

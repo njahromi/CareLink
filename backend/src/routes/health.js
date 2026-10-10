@@ -1,113 +1,80 @@
 const express = require('express');
-const logger = require('../utils/logger');
+const fhirService = require('../services/fhirService');
+const { getState } = require('../services/platformStore');
+const { listJobs } = require('../services/bulkExportService');
+const { probeFhir, probePostgres, mongoStatus } = require('../utils/database');
 
 const router = express.Router();
 
-/**
- * @swagger
- * /api/health:
- *   get:
- *     summary: Get system health status
- *     tags: [Health]
- *     responses:
- *       200:
- *         description: Health status retrieved successfully
- */
-router.get('/',
-  async (req, res, next) => {
-    try {
-      const healthStatus = {
-        status: 'healthy',
+router.get('/', async (req, res, next) => {
+  try {
+    const [fhir, postgres] = await Promise.all([probeFhir(), probePostgres()]);
+    const unhealthy = [fhir, postgres].some((item) => item.status !== 'connected');
+    res.status(unhealthy ? 503 : 200).json({
+      success: !unhealthy,
+      data: {
+        status: unhealthy ? 'degraded' : 'healthy',
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
         environment: process.env.NODE_ENV || 'development',
-        version: process.env.npm_package_version || '1.0.0',
+        version: '1.0.0',
         services: {
-          database: 'connected',
-          fhir: 'connected',
-          redis: 'connected'
-        },
-        memory: {
-          used: process.memoryUsage().heapUsed,
-          total: process.memoryUsage().heapTotal,
-          external: process.memoryUsage().external
+          fhir: fhir.status,
+          postgres: postgres.status,
+          mongo: mongoStatus()
         }
-      };
-
-      res.json({
-        success: true,
-        data: healthStatus
-      });
-    } catch (error) {
-      next(error);
-    }
+      }
+    });
+  } catch (error) {
+    next(error);
   }
-);
+});
 
-/**
- * @swagger
- * /api/health/detailed:
- *   get:
- *     summary: Get detailed system health information
- *     tags: [Health]
- *     responses:
- *       200:
- *         description: Detailed health information retrieved successfully
- */
-router.get('/detailed',
-  async (req, res, next) => {
+router.get('/detailed', async (req, res, next) => {
+  try {
+    const [fhir, postgres] = await Promise.all([probeFhir(), probePostgres()]);
+    let capabilities = null;
     try {
-      const detailedHealth = {
-        status: 'healthy',
+      capabilities = await fhirService.getCapabilities();
+    } catch (error) {
+      capabilities = { error: error.message };
+    }
+    const state = getState();
+    const unhealthy = fhir.status !== 'connected' || postgres.status !== 'connected';
+    res.status(unhealthy ? 503 : 200).json({
+      success: !unhealthy,
+      data: {
+        status: unhealthy ? 'degraded' : 'healthy',
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
         environment: process.env.NODE_ENV || 'development',
-        version: process.env.npm_package_version || '1.0.0',
+        version: '1.0.0',
         services: {
-          database: {
-            status: 'connected',
-            responseTime: '2ms',
-            lastCheck: new Date().toISOString()
-          },
-          fhir: {
-            status: 'connected',
-            responseTime: '150ms',
-            lastCheck: new Date().toISOString()
-          },
-          redis: {
-            status: 'connected',
-            responseTime: '1ms',
-            lastCheck: new Date().toISOString()
-          }
+          fhir,
+          postgres,
+          mongo: { status: mongoStatus() },
+          gateway: { status: 'connected', modulesEnabled: state.modules.filter((item) => item.enabled).length }
         },
+        repository: {
+          url: fhirService.repositoryUrl,
+          software: capabilities?.software || null,
+          fhirVersion: capabilities?.fhirVersion || 'R4'
+        },
+        exports: {
+          jobs: listJobs().length,
+          inProgress: listJobs().filter((job) => job.status === 'in-progress' || job.status === 'accepted').length
+        },
+        metrics: state.metrics,
         system: {
           platform: process.platform,
           nodeVersion: process.version,
-          memory: {
-            used: process.memoryUsage().heapUsed,
-            total: process.memoryUsage().heapTotal,
-            external: process.memoryUsage().external,
-            rss: process.memoryUsage().rss
-          },
-          cpu: {
-            loadAverage: process.cpuUsage()
-          }
-        },
-        endpoints: {
-          total: 25,
-          active: 25,
-          errors: 0
+          memory: process.memoryUsage()
         }
-      };
-
-      res.json({
-        success: true,
-        data: detailedHealth
-      });
-    } catch (error) {
-      next(error);
-    }
+      }
+    });
+  } catch (error) {
+    next(error);
   }
-);
+});
 
-module.exports = router; 
+module.exports = router;

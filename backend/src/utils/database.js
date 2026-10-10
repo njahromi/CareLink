@@ -1,98 +1,107 @@
 const mongoose = require('mongoose');
-const sql = require('mssql');
+const { Client } = require('pg');
 const logger = require('./logger');
 
-// MongoDB connection
+let mongoConnected = false;
+
 const connectMongoDB = async () => {
+  const mongoUri = process.env.MONGODB_URI;
+  if (process.env.CONNECT_MONGO === 'false' || !mongoUri) {
+    logger.info('MongoDB skipped (CONNECT_MONGO=false or MONGODB_URI unset)');
+    return;
+  }
   try {
-    const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/carelink';
-    await mongoose.connect(mongoUri, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-    logger.info('✅ MongoDB connected successfully');
+    await mongoose.connect(mongoUri);
+    mongoConnected = true;
+    logger.info('MongoDB connected');
   } catch (error) {
-    logger.error('❌ MongoDB connection error:', error);
-    throw error;
+    logger.warn(`MongoDB unavailable: ${error.message}`);
   }
 };
 
-// Azure SQL connection
-const connectAzureSQL = async () => {
-  try {
-    const sqlConfig = {
-      user: process.env.AZURE_SQL_USER,
-      password: process.env.AZURE_SQL_PASSWORD,
-      database: process.env.AZURE_SQL_DATABASE,
-      server: process.env.AZURE_SQL_SERVER,
-      pool: {
-        max: 10,
-        min: 0,
-        idleTimeoutMillis: 30000
-      },
-      options: {
-        encrypt: true,
-        trustServerCertificate: false
-      }
-    };
-
-    const pool = await sql.connect(sqlConfig);
-    logger.info('✅ Azure SQL connected successfully');
-    return pool;
-  } catch (error) {
-    logger.error('❌ Azure SQL connection error:', error);
-    throw error;
-  }
-};
-
-// Initialize database connections
 const connectDB = async () => {
-  try {
-    await connectMongoDB();
-    
-    // Only connect to Azure SQL if connection string is provided
-    if (process.env.AZURE_SQL_CONNECTION_STRING) {
-      await connectAzureSQL();
-    } else {
-      logger.warn('⚠️ Azure SQL connection string not provided, skipping SQL connection');
-    }
-    
-    logger.info('✅ All database connections established');
-  } catch (error) {
-    logger.error('❌ Database connection failed:', error);
-    throw error;
-  }
+  await connectMongoDB();
 };
 
-// Graceful shutdown
 const closeDBConnections = async () => {
-  try {
+  if (mongoConnected) {
     await mongoose.connection.close();
-    logger.info('✅ MongoDB connection closed');
-    
-    if (sql.connected) {
-      await sql.close();
-      logger.info('✅ Azure SQL connection closed');
-    }
-  } catch (error) {
-    logger.error('❌ Error closing database connections:', error);
+    mongoConnected = false;
   }
 };
 
-// Handle process termination
+function mongoStatus() {
+  return mongoConnected ? 'connected' : 'skipped';
+}
+
+async function probeFhir() {
+  const fhirService = require('../services/fhirService');
+  const started = Date.now();
+  try {
+    await fhirService.ensureBackend();
+    const capabilities = await fhirService.getCapabilities();
+    return {
+      status: 'connected',
+      mode: fhirService.embedded ? 'embedded' : 'hapi',
+      responseTimeMs: Date.now() - started,
+      fhirVersion: capabilities?.fhirVersion || 'R4',
+      software: capabilities?.software?.name || 'HAPI FHIR'
+    };
+  } catch (error) {
+    return {
+      status: 'down',
+      responseTimeMs: Date.now() - started,
+      error: error.message
+    };
+  }
+}
+
+async function probePostgres() {
+  const connectionString = process.env.FHIR_POSTGRES_URL;
+  if (!connectionString) {
+    return { status: 'skipped', error: 'FHIR_POSTGRES_URL not set' };
+  }
+  const started = Date.now();
+  const client = new Client({ connectionString, connectionTimeoutMillis: 4000 });
+  try {
+    await client.connect();
+    const result = await client.query('SELECT COUNT(*)::int AS resources FROM hfj_resource WHERE res_deleted_at IS NULL');
+    await client.end();
+    return {
+      status: 'connected',
+      responseTimeMs: Date.now() - started,
+      resourceCount: result.rows[0]?.resources ?? null
+    };
+  } catch (error) {
+    try {
+      await client.end();
+    } catch (closeError) {
+      // ignore
+    }
+    return {
+      status: error.message.includes('does not exist') ? 'connected' : 'down',
+      responseTimeMs: Date.now() - started,
+      error: error.message,
+      note: error.message.includes('does not exist')
+        ? 'Database reachable; HAPI tables appear after the first repository write.'
+        : undefined
+    };
+  }
+}
+
 process.on('SIGINT', async () => {
   await closeDBConnections();
-  process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
   await closeDBConnections();
-  process.exit(0);
 });
 
 module.exports = {
   connectDB,
   closeDBConnections,
-  mongoose,
-  sql
-}; 
+  mongoStatus,
+  probeFhir,
+  probePostgres,
+  mongoose
+};
