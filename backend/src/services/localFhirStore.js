@@ -1,5 +1,5 @@
 const { randomUUID } = require('crypto');
-const { allResources, PARTITION_SYSTEM } = require('../../../fhir/seed');
+const { allResources } = require('../../../fhir/seed');
 
 const store = new Map();
 

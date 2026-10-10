@@ -8,13 +8,13 @@ on:
 
 env:
   NODE_VERSION: '18'
-  AZURE_WEBAPP_NAME_BACKEND: carelink-backend-${{ github.sha }}
-  AZURE_WEBAPP_NAME_FRONTEND: carelink-frontend-${{ github.sha }}
 
 jobs:
-  # Backend Tests and Build
   backend:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -27,36 +27,25 @@ jobs:
         cache-dependency-path: backend/package-lock.json
 
     - name: Install dependencies
-      run: |
-        cd backend
-        npm ci
+      run: npm ci
 
     - name: Run linting
-      run: |
-        cd backend
-        npm run lint
+      run: npm run lint
 
     - name: Run tests
-      run: |
-        cd backend
-        npm test
+      run: npm test
       env:
         CI: true
+        JWT_SECRET: ci-test-secret
 
     - name: Build application
-      run: |
-        cd backend
-        npm run build
+      run: npm run build
 
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: backend-build
-        path: backend/
-
-  # Frontend Tests and Build
   frontend:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -69,28 +58,20 @@ jobs:
         cache-dependency-path: frontend/package-lock.json
 
     - name: Install dependencies
-      run: |
-        cd frontend
-        npm ci
+      run: npm ci
 
     - name: Run linting
-      run: |
-        cd frontend
-        npm run lint
+      run: npm run lint
 
     - name: Run tests
-      run: |
-        cd frontend
-        npm test
+      run: npm test
       env:
         CI: true
 
     - name: Build application
-      run: |
-        cd frontend
-        npm run build
+      run: npm run build
       env:
-        VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
+        VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL || 'http://localhost:3000/api' }}
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
@@ -98,17 +79,66 @@ jobs:
         name: frontend-build
         path: frontend/dist/
 
-  # Infrastructure Deployment
+  security:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@0.28.0
+      with:
+        scan-type: fs
+        scan-ref: .
+        format: sarif
+        output: trivy-results.sarif
+        exit-code: '0'
+        severity: CRITICAL,HIGH
+
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      continue-on-error: true
+      with:
+        sarif_file: trivy-results.sarif
+
+  performance:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: backend/package-lock.json
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run performance checks
+      run: npm run test:perf
+      env:
+        CI: true
+
   infrastructure:
     needs: [backend, frontend]
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && secrets.AZURE_CREDENTIALS != ''
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
     - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v2
+      uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: '1.5.0'
 
@@ -118,39 +148,30 @@ jobs:
         creds: ${{ secrets.AZURE_CREDENTIALS }}
 
     - name: Terraform Init
-      run: |
-        cd infra
-        terraform init
+      working-directory: infra
+      run: terraform init
 
     - name: Terraform Plan
-      run: |
-        cd infra
-        terraform plan -out=tfplan
+      working-directory: infra
+      run: terraform plan -out=tfplan
       env:
         TF_VAR_smart_client_id: ${{ secrets.SMART_CLIENT_ID }}
         TF_VAR_smart_client_secret: ${{ secrets.SMART_CLIENT_SECRET }}
 
     - name: Terraform Apply
-      run: |
-        cd infra
-        terraform apply -auto-approve tfplan
+      working-directory: infra
+      run: terraform apply -auto-approve tfplan
       env:
         TF_VAR_smart_client_id: ${{ secrets.SMART_CLIENT_ID }}
         TF_VAR_smart_client_secret: ${{ secrets.SMART_CLIENT_SECRET }}
 
-  # Deploy Backend
   deploy-backend:
     needs: infrastructure
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && secrets.AZURE_CREDENTIALS != ''
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
-    - name: Download backend artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: backend-build
 
     - name: Setup Node.js
       uses: actions/setup-node@v4
@@ -165,14 +186,13 @@ jobs:
     - name: Deploy to Azure Web App - Backend
       uses: azure/webapps-deploy@v3
       with:
-        app-name: ${{ env.AZURE_WEBAPP_NAME_BACKEND }}
+        app-name: ${{ secrets.AZURE_WEBAPP_NAME_BACKEND }}
         package: ./backend
 
-  # Deploy Frontend
   deploy-frontend:
     needs: infrastructure
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && secrets.AZURE_CREDENTIALS != ''
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -181,6 +201,7 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: frontend-build
+        path: frontend/dist
 
     - name: Azure Login
       uses: azure/login@v2
@@ -190,63 +211,18 @@ jobs:
     - name: Deploy to Azure Web App - Frontend
       uses: azure/webapps-deploy@v3
       with:
-        app-name: ${{ env.AZURE_WEBAPP_NAME_FRONTEND }}
-        package: ./frontend
+        app-name: ${{ secrets.AZURE_WEBAPP_NAME_FRONTEND }}
+        package: ./frontend/dist
 
-  # Security Scan
-  security:
-    runs-on: ubuntu-latest
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Run Trivy vulnerability scanner
-      uses: aquasecurity/trivy-action@master
-      with:
-        scan-type: 'fs'
-        scan-ref: '.'
-        format: 'sarif'
-        output: 'trivy-results.sarif'
-
-    - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v2
-      if: always()
-      with:
-        sarif_file: 'trivy-results.sarif'
-
-  # Performance Tests
-  performance:
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ env.NODE_VERSION }}
-
-    - name: Install dependencies
-      run: |
-        cd backend
-        npm ci
-
-    - name: Run performance tests
-      run: |
-        cd backend
-        npm run test:perf
-      env:
-        CI: true
-
-  # Notify Deployment
   notify:
-    needs: [deploy-backend, deploy-frontend]
+    needs: [backend, frontend, security, performance]
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: always() && github.ref == 'refs/heads/main'
     steps:
-    - name: Notify deployment success
+    - name: Summarize pipeline
       run: |
-        echo "Deployment completed successfully!"
-        echo "Backend URL: https://${{ env.AZURE_WEBAPP_NAME_BACKEND }}.azurewebsites.net"
-        echo "Frontend URL: https://${{ env.AZURE_WEBAPP_NAME_FRONTEND }}.azurewebsites.net" 
+        echo "Backend: ${{ needs.backend.result }}"
+        echo "Frontend: ${{ needs.frontend.result }}"
+        echo "Security: ${{ needs.security.result }}"
+        echo "Performance: ${{ needs.performance.result }}"
+        echo "Azure deploy is skipped until AZURE_CREDENTIALS is configured."
